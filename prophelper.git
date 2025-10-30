@@ -1,0 +1,670 @@
+import React, { useState } from 'react';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell, LineChart, Line } from 'recharts';
+import { Calculator, TrendingUp, DollarSign, AlertCircle } from 'lucide-react';
+
+const PropFirmSimulator = () => {
+  const [firm, setFirm] = useState('topstep');
+  const [winRate, setWinRate] = useState(55);
+  const [riskReward, setRiskReward] = useState(2);
+  const [riskPerTrade, setRiskPerTrade] = useState(1);
+  const [accountSize, setAccountSize] = useState('50k');
+  const [numAccounts, setNumAccounts] = useState(10);
+  const [results, setResults] = useState(null);
+  const [isSimulating, setIsSimulating] = useState(false);
+  const [selectedAccount, setSelectedAccount] = useState(null);
+
+  const accountConfigs = {
+    '50k': {
+      profitTarget: 3000,
+      maxLoss: 2000,
+      dailyLoss: 1000,
+      maxContracts: 5,
+      accountBalance: 50000,
+      fullCost: 165,
+      failCost: 50
+    },
+    '100k': {
+      profitTarget: 6000,
+      maxLoss: 3000,
+      dailyLoss: 1500,
+      maxContracts: 10,
+      accountBalance: 100000,
+      fullCost: 325,
+      failCost: 99
+    },
+    '150k': {
+      profitTarget: 9000,
+      maxLoss: 4500,
+      dailyLoss: 2250,
+      maxContracts: 15,
+      accountBalance: 150000,
+      fullCost: 375,
+      failCost: 99
+    }
+  };
+
+  const simulateTrade = (balance, config, winRateDecimal, rrRatio, riskPct) => {
+    const isWin = Math.random() < winRateDecimal;
+    const riskAmount = balance * (riskPct / 100);
+    
+    if (isWin) {
+      return riskAmount * rrRatio;
+    } else {
+      return -riskAmount;
+    }
+  };
+
+  const simulateEvaluation = (config, winRateDecimal, rrRatio, riskPct) => {
+    let balance = 0;
+    let dailyProfits = [];
+    let currentDayProfit = 0;
+    let tradesInDay = 0;
+    let totalProfit = 0;
+    let maxDrawdown = 0;
+    let currentDrawdown = 0;
+    const balanceHistory = [{ trade: 0, balance: 0, phase: 'evaluation' }];
+
+    // Simulate trading until pass or fail
+    for (let trade = 0; trade < 500; trade++) {
+      const tradePnL = simulateTrade(config.accountBalance, config, winRateDecimal, rrRatio, riskPct);
+      
+      balance += tradePnL;
+      currentDayProfit += tradePnL;
+      totalProfit += tradePnL;
+      tradesInDay++;
+
+      balanceHistory.push({ trade: trade + 1, balance, phase: 'evaluation' });
+
+      // Track drawdown
+      if (balance < 0) {
+        currentDrawdown = Math.abs(balance);
+        maxDrawdown = Math.max(maxDrawdown, currentDrawdown);
+      } else {
+        currentDrawdown = 0;
+      }
+
+      // Check daily loss limit
+      if (currentDayProfit < -config.dailyLoss) {
+        return { passed: false, reason: 'daily_loss', balance, trades: trade + 1, balanceHistory };
+      }
+
+      // Check max loss limit
+      if (balance <= -config.maxLoss) {
+        return { passed: false, reason: 'max_loss', balance, trades: trade + 1, balanceHistory };
+      }
+
+      // End of day (every 3-5 trades)
+      if (tradesInDay >= 3 + Math.floor(Math.random() * 3)) {
+        if (currentDayProfit > 0) {
+          dailyProfits.push(currentDayProfit);
+        }
+        currentDayProfit = 0;
+        tradesInDay = 0;
+
+        // Check profit target
+        if (balance >= config.profitTarget) {
+          // Check consistency rule (no single day > 50% of total profit)
+          const maxDayProfit = Math.max(...dailyProfits);
+          if (maxDayProfit > balance * 0.5) {
+            continue; // Need more consistent profits
+          }
+          return { passed: true, balance, trades: trade + 1, dailyProfits: dailyProfits.length, balanceHistory };
+        }
+      }
+    }
+
+    return { passed: false, reason: 'timeout', balance, trades: 500, balanceHistory };
+  };
+
+  const simulateFundedAccount = (config, winRateDecimal, rrRatio, riskPct, startingTradeNum = 0) => {
+    let balance = 0;
+    let winningDays = 0;
+    let currentDayProfit = 0;
+    let tradesInDay = 0;
+    let totalWithdrawn = 0;
+    let payoutCycles = 0;
+    const balanceHistory = [{ trade: startingTradeNum, balance: 0, phase: 'funded' }];
+
+    for (let trade = 0; trade < 1000; trade++) {
+      const tradePnL = simulateTrade(config.accountBalance, config, winRateDecimal, rrRatio, riskPct);
+      
+      balance += tradePnL;
+      currentDayProfit += tradePnL;
+      tradesInDay++;
+
+      balanceHistory.push({ trade: startingTradeNum + trade + 1, balance, phase: 'funded', withdrawn: totalWithdrawn });
+
+      // Check daily loss limit
+      if (currentDayProfit < -config.dailyLoss) {
+        return { success: false, reason: 'daily_loss', withdrawn: totalWithdrawn, balance, balanceHistory };
+      }
+
+      // Check max loss limit
+      if (balance <= -config.maxLoss) {
+        return { success: false, reason: 'max_loss', withdrawn: totalWithdrawn, balance, balanceHistory };
+      }
+
+      // End of day
+      if (tradesInDay >= 3 + Math.floor(Math.random() * 3)) {
+        if (currentDayProfit >= 150) {
+          winningDays++;
+        }
+        
+        // Check if eligible for payout (5 winning days of $150+)
+        if (winningDays >= 5 && balance > 0) {
+          // Can only withdraw 50% of account balance
+          const withdrawalAmount = balance * 0.5;
+          totalWithdrawn += withdrawalAmount;
+          balance -= withdrawalAmount;
+          winningDays = 0; // Reset for next payout cycle
+          payoutCycles++;
+          
+          // Simulate continuing or stopping (60% chance to continue after payout)
+          if (Math.random() > 0.6) {
+            return { success: true, withdrawn: totalWithdrawn, balance, balanceHistory };
+          }
+        }
+        
+        currentDayProfit = 0;
+        tradesInDay = 0;
+      }
+
+      // Stop if made significant money (after 3 payout cycles)
+      if (payoutCycles >= 3) {
+        return { success: true, withdrawn: totalWithdrawn, balance, balanceHistory };
+      }
+    }
+
+    return { success: true, withdrawn: totalWithdrawn, balance, balanceHistory };
+  };
+
+  const runSimulation = () => {
+    setIsSimulating(true);
+    
+    // Small delay to show loading state
+    setTimeout(() => {
+      const config = accountConfigs[accountSize];
+      const winRateDecimal = winRate / 100;
+      
+      let passedEval = 0;
+      let receivedPayout = 0;
+      let totalPayouts = 0;
+      let totalCost = 0; // Changed to calculate dynamically
+      let activeXFAs = 0;
+      let maxActiveXFAs = 0;
+      
+      const accountDetails = [];
+
+      for (let i = 0; i < numAccounts; i++) {
+        const evalResult = simulateEvaluation(config, winRateDecimal, riskReward, riskPerTrade);
+        
+        const account = {
+          id: i + 1,
+          passedEval: evalResult.passed,
+          evalTrades: evalResult.trades,
+          combineBalance: evalResult.balance,
+          funded: false,
+          payout: 0,
+          xfaBalance: 0,
+          failReason: evalResult.reason,
+          cost: 0,
+          balanceHistory: evalResult.balanceHistory
+        };
+
+        if (evalResult.passed) {
+          passedEval++;
+          account.cost = config.fullCost; // Full cost if passed
+          totalCost += config.fullCost;
+          
+          // Check if we can activate this XFA (max 5 active)
+          if (activeXFAs < 5) {
+            activeXFAs++;
+            maxActiveXFAs = Math.max(maxActiveXFAs, activeXFAs);
+            
+            const fundedResult = simulateFundedAccount(config, winRateDecimal, riskReward, riskPerTrade, evalResult.trades);
+            account.funded = true;
+            account.payout = fundedResult.withdrawn;
+            account.xfaBalance = fundedResult.balance;
+            account.balanceHistory = [...evalResult.balanceHistory, ...fundedResult.balanceHistory];
+            
+            if (fundedResult.withdrawn > 0) {
+              receivedPayout++;
+              totalPayouts += fundedResult.withdrawn;
+            }
+            
+            // Account completed, free up XFA slot
+            activeXFAs--;
+          }
+        } else {
+          // Only paid the fail cost (blown before passing)
+          account.cost = config.failCost;
+          totalCost += config.failCost;
+        }
+
+        accountDetails.push(account);
+      }
+
+      const netProfit = totalPayouts - totalCost;
+      const roi = ((netProfit / totalCost) * 100).toFixed(2);
+
+      setResults({
+        passedEval,
+        passedEvalPercent: ((passedEval / numAccounts) * 100).toFixed(1),
+        receivedPayout,
+        payoutPercent: ((receivedPayout / numAccounts) * 100).toFixed(1),
+        totalPayouts: totalPayouts.toFixed(2),
+        totalCost: totalCost.toFixed(2),
+        netProfit: netProfit.toFixed(2),
+        roi,
+        profitable: netProfit > 0,
+        maxActiveXFAs,
+        accountDetails
+      });
+
+      setIsSimulating(false);
+    }, 100);
+  };
+
+  const chartData = results ? [
+    { name: 'Total Accounts', value: numAccounts, fill: '#94a3b8' },
+    { name: 'Passed Eval', value: results.passedEval, fill: '#3b82f6' },
+    { name: 'Received Payout', value: results.receivedPayout, fill: '#10b981' }
+  ] : [];
+
+  const pieData = results ? [
+    { name: 'Failed Eval', value: numAccounts - results.passedEval, fill: '#ef4444' },
+    { name: 'Passed, No Payout', value: results.passedEval - results.receivedPayout, fill: '#f59e0b' },
+    { name: 'Received Payout', value: results.receivedPayout, fill: '#10b981' }
+  ] : [];
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-900 to-slate-900 p-6">
+      <div className="max-w-7xl mx-auto">
+        {selectedAccount ? (
+          // Account Detail View
+          <div className="space-y-6">
+            <button
+              onClick={() => setSelectedAccount(null)}
+              className="bg-slate-700 hover:bg-slate-600 text-white px-4 py-2 rounded-lg flex items-center gap-2 transition-colors"
+            >
+              ← Back to Results
+            </button>
+
+            <div className="bg-white/10 backdrop-blur-lg rounded-2xl shadow-2xl p-8">
+              <h2 className="text-3xl font-bold text-white mb-6">Account #{selectedAccount.id} - Monte Carlo Simulation</h2>
+              
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+                <div className="bg-slate-800/50 rounded-lg p-4">
+                  <p className="text-slate-400 text-sm">Status</p>
+                  <p className="text-white text-xl font-semibold">
+                    {selectedAccount.funded ? '✓ Funded' : selectedAccount.passedEval ? '✓ Passed Eval' : '✗ Failed'}
+                  </p>
+                </div>
+                <div className="bg-slate-800/50 rounded-lg p-4">
+                  <p className="text-slate-400 text-sm">Combine Balance</p>
+                  <p className={`text-xl font-semibold ${selectedAccount.combineBalance >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                    ${selectedAccount.combineBalance.toFixed(2)}
+                  </p>
+                </div>
+                <div className="bg-slate-800/50 rounded-lg p-4">
+                  <p className="text-slate-400 text-sm">Total Payout</p>
+                  <p className="text-green-400 text-xl font-semibold">${selectedAccount.payout.toFixed(2)}</p>
+                </div>
+              </div>
+
+              {selectedAccount.funded && (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+                  <div className="bg-slate-800/50 rounded-lg p-4">
+                    <p className="text-slate-400 text-sm">XFA Final Balance</p>
+                    <p className={`text-xl font-semibold ${selectedAccount.xfaBalance >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                      ${selectedAccount.xfaBalance.toFixed(2)}
+                    </p>
+                  </div>
+                  <div className="bg-slate-800/50 rounded-lg p-4">
+                    <p className="text-slate-400 text-sm">Total Trades</p>
+                    <p className="text-white text-xl font-semibold">{selectedAccount.balanceHistory.length - 1}</p>
+                  </div>
+                </div>
+              )}
+
+              <div className="bg-slate-800/30 rounded-xl p-6">
+                <h3 className="text-xl font-bold text-white mb-4">Balance Progression</h3>
+                <ResponsiveContainer width="100%" height={400}>
+                  <LineChart data={selectedAccount.balanceHistory}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                    <XAxis 
+                      dataKey="trade" 
+                      stroke="#94a3b8"
+                      label={{ value: 'Trade Number', position: 'insideBottom', offset: -5, fill: '#94a3b8' }}
+                    />
+                    <YAxis 
+                      stroke="#94a3b8"
+                      label={{ value: 'Balance ($)', angle: -90, position: 'insideLeft', fill: '#94a3b8' }}
+                    />
+                    <Tooltip 
+                      contentStyle={{ backgroundColor: '#1e293b', border: 'none', borderRadius: '8px' }}
+                      labelStyle={{ color: '#e2e8f0' }}
+                      formatter={(value, name) => {
+                        if (name === 'balance') return [`${value.toFixed(2)}`, 'Balance'];
+                        if (name === 'withdrawn') return [`${value.toFixed(2)}`, 'Total Withdrawn'];
+                        return [value, name];
+                      }}
+                    />
+                    <Legend />
+                    <Line 
+                      type="monotone" 
+                      dataKey="balance" 
+                      stroke="#3b82f6" 
+                      strokeWidth={2}
+                      dot={false}
+                      name="Balance"
+                    />
+                    {selectedAccount.funded && (
+                      <Line 
+                        type="monotone" 
+                        dataKey="withdrawn" 
+                        stroke="#10b981" 
+                        strokeWidth={2}
+                        dot={false}
+                        name="Total Withdrawn"
+                      />
+                    )}
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+
+              {!selectedAccount.passedEval && (
+                <div className="mt-6 bg-red-500/20 border border-red-500/50 rounded-xl p-4">
+                  <p className="text-red-300">
+                    <span className="font-semibold">Failed Reason: </span>
+                    {selectedAccount.failReason === 'daily_loss' && 'Daily Loss Limit Exceeded'}
+                    {selectedAccount.failReason === 'max_loss' && 'Maximum Loss Limit Exceeded'}
+                    {selectedAccount.failReason === 'timeout' && 'Did Not Reach Profit Target'}
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+        ) : (
+          // Main Dashboard
+          <div>
+        <div className="bg-white/10 backdrop-blur-lg rounded-2xl shadow-2xl p-8 mb-6">
+          <div className="flex items-center gap-3 mb-6">
+            <Calculator className="w-8 h-8 text-blue-400" />
+            <h1 className="text-3xl font-bold text-white">Prop Firm Trading Simulator</h1>
+          </div>
+          
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            {/* Prop Firm Selection */}
+            <div>
+              <label className="block text-sm font-medium text-blue-200 mb-2">Prop Firm</label>
+              <select
+                value={firm}
+                onChange={(e) => setFirm(e.target.value)}
+                className="w-full bg-slate-800 text-white border border-slate-600 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="topstep">TopStep</option>
+              </select>
+            </div>
+
+            {/* Win Rate */}
+            <div>
+              <label className="block text-sm font-medium text-blue-200 mb-2">
+                Win Rate: {winRate}%
+              </label>
+              <input
+                type="range"
+                min="30"
+                max="80"
+                value={winRate}
+                onChange={(e) => setWinRate(Number(e.target.value))}
+                className="w-full"
+              />
+            </div>
+
+            {/* Risk/Reward */}
+            <div>
+              <label className="block text-sm font-medium text-blue-200 mb-2">
+                Risk/Reward Ratio: 1:{riskReward}
+              </label>
+              <input
+                type="range"
+                min="1"
+                max="5"
+                step="0.5"
+                value={riskReward}
+                onChange={(e) => setRiskReward(Number(e.target.value))}
+                className="w-full"
+              />
+            </div>
+
+            {/* Risk Per Trade */}
+            <div>
+              <label className="block text-sm font-medium text-blue-200 mb-2">
+                Risk Per Trade: {riskPerTrade}%
+              </label>
+              <input
+                type="range"
+                min="0.25"
+                max="3"
+                step="0.25"
+                value={riskPerTrade}
+                onChange={(e) => setRiskPerTrade(Number(e.target.value))}
+                className="w-full"
+              />
+            </div>
+
+            {/* Account Size */}
+            <div>
+              <label className="block text-sm font-medium text-blue-200 mb-2">Account Size</label>
+              <select
+                value={accountSize}
+                onChange={(e) => setAccountSize(e.target.value)}
+                className="w-full bg-slate-800 text-white border border-slate-600 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="50k">$50K (Target: $3K, Pass: $165, Fail: $50)</option>
+                <option value="100k">$100K (Target: $6K, Pass: $325, Fail: $99)</option>
+                <option value="150k">$150K (Target: $9K, Pass: $375, Fail: $99)</option>
+              </select>
+            </div>
+
+            {/* Number of Accounts */}
+            <div>
+              <label className="block text-sm font-medium text-blue-200 mb-2">
+                Number of Accounts: {numAccounts}
+              </label>
+              <input
+                type="number"
+                min="1"
+                max="100"
+                value={numAccounts}
+                onChange={(e) => setNumAccounts(Number(e.target.value))}
+                className="w-full bg-slate-800 text-white border border-slate-600 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+          </div>
+
+          <button
+            onClick={runSimulation}
+            disabled={isSimulating}
+            className="mt-6 w-full bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white font-semibold py-3 px-6 rounded-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+          >
+            {isSimulating ? (
+              <>Running Simulation...</>
+            ) : (
+              <>
+                <TrendingUp className="w-5 h-5" />
+                Run Simulation
+              </>
+            )}
+          </button>
+        </div>
+
+        {/* Results */}
+        {results && (
+          <div className="space-y-6">
+            {/* Summary Cards */}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+              <div className="bg-gradient-to-br from-blue-500 to-blue-600 rounded-xl p-6 shadow-lg">
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="text-blue-100 text-sm font-medium">Passed Evaluation</h3>
+                  <TrendingUp className="w-5 h-5 text-blue-100" />
+                </div>
+                <p className="text-3xl font-bold text-white">{results.passedEval}</p>
+                <p className="text-blue-100 text-sm mt-1">{results.passedEvalPercent}% of total</p>
+              </div>
+
+              <div className="bg-gradient-to-br from-green-500 to-green-600 rounded-xl p-6 shadow-lg">
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="text-green-100 text-sm font-medium">Received Payout</h3>
+                  <DollarSign className="w-5 h-5 text-green-100" />
+                </div>
+                <p className="text-3xl font-bold text-white">{results.receivedPayout}</p>
+                <p className="text-green-100 text-sm mt-1">{results.payoutPercent}% of total</p>
+              </div>
+
+              <div className="bg-gradient-to-br from-purple-500 to-purple-600 rounded-xl p-6 shadow-lg">
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="text-purple-100 text-sm font-medium">Total Payouts</h3>
+                  <DollarSign className="w-5 h-5 text-purple-100" />
+                </div>
+                <p className="text-3xl font-bold text-white">${results.totalPayouts}</p>
+                <p className="text-purple-100 text-sm mt-1">Cost: ${results.totalCost}</p>
+              </div>
+
+              <div className={`bg-gradient-to-br ${results.profitable ? 'from-green-500 to-green-600' : 'from-red-500 to-red-600'} rounded-xl p-6 shadow-lg`}>
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="text-white text-sm font-medium">Net P&L</h3>
+                  <AlertCircle className="w-5 h-5 text-white" />
+                </div>
+                <p className="text-3xl font-bold text-white">${results.netProfit}</p>
+                <p className="text-white text-sm mt-1">ROI: {results.roi}%</p>
+              </div>
+            </div>
+
+            {/* XFA Limit Warning */}
+            <div className="bg-orange-500/20 border border-orange-500/50 rounded-xl p-4">
+              <div className="flex items-start gap-3">
+                <AlertCircle className="w-5 h-5 text-orange-400 mt-0.5" />
+                <div>
+                  <h4 className="text-orange-300 font-semibold">XFA Limit Applied</h4>
+                  <p className="text-orange-200 text-sm mt-1">
+                    Maximum of 5 active funded accounts (XFA) enforced. Peak active XFAs: {results.maxActiveXFAs}
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* Account Details Table */}
+            <div className="bg-white/10 backdrop-blur-lg rounded-xl p-6">
+              <h3 className="text-xl font-bold text-white mb-4">Account Details (Click to View Chart)</h3>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm text-left">
+                  <thead className="text-xs uppercase bg-slate-800/50 text-blue-200">
+                    <tr>
+                      <th className="px-4 py-3">Account #</th>
+                      <th className="px-4 py-3">Status</th>
+                      <th className="px-4 py-3">Combine Balance</th>
+                      <th className="px-4 py-3">XFA Balance</th>
+                      <th className="px-4 py-3">Payout</th>
+                      <th className="px-4 py-3">Cost</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {results.accountDetails.map((acc) => (
+                      <tr 
+                        key={acc.id} 
+                        className="border-b border-slate-700/50 text-white hover:bg-slate-700/30 cursor-pointer transition-colors"
+                        onClick={() => setSelectedAccount(acc)}
+                      >
+                        <td className="px-4 py-3">#{acc.id}</td>
+                        <td className="px-4 py-3">
+                          {acc.funded ? (
+                            <span className="bg-green-500/20 text-green-300 px-2 py-1 rounded text-xs">Funded</span>
+                          ) : acc.passedEval ? (
+                            <span className="bg-blue-500/20 text-blue-300 px-2 py-1 rounded text-xs">Passed (Queue)</span>
+                          ) : (
+                            <span className="bg-red-500/20 text-red-300 px-2 py-1 rounded text-xs">Failed</span>
+                          )}
+                        </td>
+                        <td className="px-4 py-3">
+                          <span className={acc.combineBalance >= 0 ? 'text-green-400' : 'text-red-400'}>
+                            ${acc.combineBalance.toFixed(2)}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3">
+                          {acc.funded ? (
+                            <span className={acc.xfaBalance >= 0 ? 'text-green-400' : 'text-red-400'}>
+                              ${acc.xfaBalance.toFixed(2)}
+                            </span>
+                          ) : (
+                            <span className="text-slate-500">-</span>
+                          )}
+                        </td>
+                        <td className="px-4 py-3">
+                          {acc.payout > 0 ? (
+                            <span className="text-green-400 font-semibold">${acc.payout.toFixed(2)}</span>
+                          ) : (
+                            <span className="text-slate-500">$0.00</span>
+                          )}
+                        </td>
+                        <td className="px-4 py-3 text-red-400">-${acc.cost.toFixed(2)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* Charts */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              <div className="bg-white/10 backdrop-blur-lg rounded-xl p-6">
+                <h3 className="text-xl font-bold text-white mb-4">Account Progression</h3>
+                <ResponsiveContainer width="100%" height={300}>
+                  <BarChart data={chartData}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                    <XAxis dataKey="name" stroke="#94a3b8" />
+                    <YAxis stroke="#94a3b8" />
+                    <Tooltip 
+                      contentStyle={{ backgroundColor: '#1e293b', border: 'none', borderRadius: '8px' }}
+                      labelStyle={{ color: '#e2e8f0' }}
+                    />
+                    <Bar dataKey="value" />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+
+              <div className="bg-white/10 backdrop-blur-lg rounded-xl p-6">
+                <h3 className="text-xl font-bold text-white mb-4">Account Distribution</h3>
+                <ResponsiveContainer width="100%" height={300}>
+                  <PieChart>
+                    <Pie
+                      data={pieData}
+                      cx="50%"
+                      cy="50%"
+                      labelLine={false}
+                      label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
+                      outerRadius={100}
+                      dataKey="value"
+                    >
+                      {pieData.map((entry, index) => (
+                        <Cell key={`cell-${index}`} fill={entry.fill} />
+                      ))}
+                    </Pie>
+                    <Tooltip 
+                      contentStyle={{ backgroundColor: '#1e293b', border: 'none', borderRadius: '8px' }}
+                    />
+                  </PieChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          </div>
+        )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+export default PropFirmSimulator;
